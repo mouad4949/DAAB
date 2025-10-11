@@ -30,7 +30,6 @@ This command will:
 		},
 	}
 
-	cmd.Flags().BoolVar(&flags.NonInteractive, "non-interactive", false, "Run in non-interactive mode with default values")
 	cmd.Flags().StringVar(&flags.ProjectPath, "project-path", ".", "Path to the project directory")
 
 	return cmd
@@ -41,7 +40,7 @@ func runInit(flags *InitFlags) error {
 	fmt.Println()
 
 	// Create the initializer
-	initializer := NewInitializer(flags.ProjectPath, flags.NonInteractive)
+	initializer := NewInitializer(flags.ProjectPath)
 
 	// Run the initialization process
 	if err := initializer.Run(); err != nil {

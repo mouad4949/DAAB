@@ -2,27 +2,38 @@ package initcmd
 
 import (
 	"fmt"
+	config "github.com/mouad4949/DAAB/internal/init/config"
+	configMicroservice "github.com/mouad4949/DAAB/internal/init/config/microservice"
+	configMonolith "github.com/mouad4949/DAAB/internal/init/config/monolith"
+	"gopkg.in/yaml.v3"
 	"os"
 	"path/filepath"
-
-	"gopkg.in/yaml.v3"
+	"strings"
 )
 
 type Initializer struct {
-	projectPath    string
-	nonInteractive bool
-	services       []string
-	config         *Config
-	ConfigMicro    *ConfigMicro
-	detector       *Detector
+	projectPath string
+
+	services []string
+
+	//Used just to detect port in getDefaultPort() by it's language
+	baseconfigapp *config.BaseConfigApp
+
+	//Used to create a daab.yaml file for monolith projects
+	configmonolith *configMonolith.ConfigMonolith
+
+	//Used to create a daab.root.yaml file for microservices projects in the root of the folder
+	ConfigMicroRoot *configMicroservice.ConfigMicroRoot
+
+	//Used to create a daab.yaml file for microservices projects on each microservice
+	ConfigMicro *configMicroservice.ConfigMicroservice
+	detector    *Detector
 }
 
-func NewInitializer(projectPath string, nonInteractive bool) *Initializer {
+func NewInitializer(projectPath string) *Initializer {
 	return &Initializer{
-		projectPath:    projectPath,
-		nonInteractive: nonInteractive,
-		config:         &Config{},
-		detector:       NewDetector(projectPath),
+		projectPath: projectPath,
+		detector:    NewDetector(projectPath),
 	}
 }
 
@@ -32,20 +43,21 @@ func NewInitializer(projectPath string, nonInteractive bool) *Initializer {
 
 func (i *Initializer) Run() error {
 	// Initialize config with defaults
-	i.config = NewConfig()
-	i.ConfigMicro = NewConfigMicro()
+	i.configmonolith = configMonolith.NewConfigMonolith()
+	i.ConfigMicroRoot = configMicroservice.NewConfigMicroRoot()
+	i.ConfigMicro = configMicroservice.NewConfigMicroservice()
+	i.baseconfigapp = config.NewBaseConfigApp()
 
 	// Step 1: Ask interactive questions (or use defaults)
 	if err := i.gatherUserInput(); err != nil {
 		return err
 	}
 
-	//Step 2:gather information based on teh project type
-	if i.config.ProjectType == "monolith" {
+	//Step 2:gather information based on the project type
+	if i.configmonolith.ProjectType == "monolith" {
 		i.detectProjectMonolith()
 	} else {
 		i.DetectProjectMicroservice()
-
 	}
 	// Step 4: Validate configuration
 	if err := i.validateConfig(); err != nil {
@@ -53,7 +65,7 @@ func (i *Initializer) Run() error {
 	}
 
 	// Step 5: Save configuration
-	if i.config.ProjectType == "microservice" {
+	if i.ConfigMicroRoot.ProjectType == "microservice" {
 		if err := i.saveConfigMicroservice(); err != nil {
 			return err
 		}
@@ -71,11 +83,6 @@ func (i *Initializer) Run() error {
 /****************************************************/
 
 func (i *Initializer) gatherUserInput() error {
-	if i.nonInteractive {
-		fmt.Println("⚙️  Using default configuration (non-interactive mode)...")
-		i.setDefaults()
-		return nil
-	}
 
 	fmt.Println("📝 Please answer a few questions about your project:")
 	fmt.Println()
@@ -86,20 +93,19 @@ func (i *Initializer) gatherUserInput() error {
 		[]string{"monolith", "microservice"},
 		"monolith",
 	)
-
 	if err != nil {
 		return err
 	}
-	i.config.ProjectType = projectType
 
-	if i.config.ProjectType == "microservice" {
-		i.ConfigMicro.ProjectType = projectType
+	if projectType == "microservice" {
+		//Project Type
+		i.ConfigMicroRoot.ProjectType = projectType
 		// Project name microservice
-		projectName, err := promptString("you microservice Project name", i.getDefaultProjectName())
+		projectName, err := promptString("your microservices Project name", i.getDefaultProjectName())
 		if err != nil {
 			return err
 		}
-		i.ConfigMicro.ProjectName = projectName
+		i.ConfigMicroRoot.ProjectName = projectName
 
 		// Cloud provider
 		cloudProvider, err := promptSelect(
@@ -110,14 +116,38 @@ func (i *Initializer) gatherUserInput() error {
 		if err != nil {
 			return err
 		}
-		i.ConfigMicro.CloudProvider = cloudProvider
+		i.ConfigMicroRoot.CloudProvider = cloudProvider
+
+		// Environment
+		environment, err := promptString("Environment", "production")
+		if err != nil {
+			return err
+		}
+		i.ConfigMicroRoot.Environment = environment
+
+		//region
+		region, err := promptString("Region", "")
+		if err != nil {
+			return err
+		}
+		i.ConfigMicroRoot.Region = region
+
+		//namespace
+		namespace, err := promptString("Kubernetes namespace", "default")
+		if err != nil {
+			return err
+		}
+		i.ConfigMicroRoot.Namespace = namespace
+
 	} else {
+		//Project Type
+		i.configmonolith.ProjectType = projectType
 		// Project name monolith
 		projectName, err := promptString("your monolith Project name", i.getDefaultProjectName())
 		if err != nil {
 			return err
 		}
-		i.config.ProjectName = projectName
+		i.configmonolith.ProjectName = projectName
 		// Cloud provider
 		cloudProvider, err := promptSelect(
 			"Cloud provider",
@@ -127,7 +157,36 @@ func (i *Initializer) gatherUserInput() error {
 		if err != nil {
 			return err
 		}
-		i.config.CloudProvider = cloudProvider
+		i.configmonolith.CloudProvider = cloudProvider
+
+		// Environment
+		environment, err := promptString("Environment", "production")
+		if err != nil {
+			return err
+		}
+		i.configmonolith.Environment = environment
+
+		//region
+		region, err := promptString("Region", "")
+		if err != nil {
+			return err
+		}
+		i.configmonolith.Region = region
+
+		// Container registry
+		registry, err := promptString("Container registry (leave empty for default)", "")
+		if err != nil {
+			return err
+		}
+		i.configmonolith.ContainerRegistry = registry
+
+		// Kubernetes namespace
+		namespace, err := promptString("Kubernetes namespace", "default")
+		if err != nil {
+			return err
+		}
+		i.configmonolith.Namespace = namespace
+
 	}
 
 	fmt.Println()
@@ -140,44 +199,24 @@ func (i *Initializer) gatherUserInput() error {
 
 func (i *Initializer) detectProjectMonolith() error {
 	fmt.Println("🔍 Detecting project type...")
-	// Environment
-	environment, err := promptString("Environment", "production")
-	if err != nil {
-		return err
-	}
-	i.config.Environment = environment
-
-	// Container registry
-	registry, err := promptString("Container registry (leave empty for default)", "")
-	if err != nil {
-		return err
-	}
-	i.config.ContainerRegistry = registry
-
-	// Kubernetes namespace
-	namespace, err := promptString("Kubernetes namespace", "default")
-	if err != nil {
-		return err
-	}
-	i.config.Namespace = namespace
 	result, err := i.detector.Detect()
 	if err != nil {
 		return fmt.Errorf("failed to detect project: %w", err)
 	}
 
-	i.config.Language = result.Language
-	i.config.Framework = result.Framework
-	i.config.DetectedFiles = result.DetectedFiles
+	i.configmonolith.Language = result.Language
+	i.configmonolith.Framework = result.Framework
+	i.configmonolith.DetectedFiles = result.DetectedFiles
+	i.baseconfigapp.Language = i.configmonolith.Language
 	port, err := promptInt("Application port", i.getDefaultPort())
 	if err != nil {
 		return err
 	}
-	i.config.Port = port
+	i.configmonolith.Port = port
 	fmt.Printf("   Language: %s\n", result.Language)
 	if result.Framework != "" {
 		fmt.Printf("   Framework: %s\n", result.Framework)
 	}
-	fmt.Println("project path:", i.projectPath)
 
 	return nil
 }
@@ -219,6 +258,10 @@ func (i *Initializer) DetectProjectMicroservice() error {
 	}
 
 	for _, folder := range folders {
+		if strings.HasPrefix(folder, ".") {
+			continue
+		}
+		i.services = append(i.services, folder)
 		reserve := i.projectPath
 		i.projectPath = folder
 		i.detector.projectPath = folder
@@ -230,17 +273,29 @@ func (i *Initializer) DetectProjectMicroservice() error {
 		}
 
 		fmt.Printf("✅ %s detected as %s (%s)\n", folder, result.Language, result.Framework)
-
-		i.config.Language = result.Language
-		i.config.Framework = result.Framework
-		i.config.DetectedFiles = result.DetectedFiles
-
+		i.ConfigMicro.ProjectName = folder
+		i.ConfigMicro.ProjectType = i.ConfigMicroRoot.ProjectType
+		i.ConfigMicro.Language = result.Language
+		i.ConfigMicro.Framework = result.Framework
+		i.ConfigMicro.DetectedFiles = result.DetectedFiles
+		i.baseconfigapp.Language = i.ConfigMicro.Language
 		port, err := promptInt("Application port", i.getDefaultPort())
 		if err != nil {
 			return err
 		}
-		i.config.Port = port
-		i.services = append(i.services, folder)
+
+		i.ConfigMicro.Port = port
+
+		//cloud
+		i.ConfigMicro.CloudProvider = i.ConfigMicroRoot.CloudProvider
+
+		// Container registry
+		registry, err := promptString("Container registry (leave empty for default)", "")
+		if err != nil {
+			return err
+		}
+		i.ConfigMicro.ContainerRegistry = registry
+
 		if err := i.saveConfig(); err != nil {
 			fmt.Println("error in creating daab.yaml in this project:", folder)
 			return err
@@ -248,7 +303,8 @@ func (i *Initializer) DetectProjectMicroservice() error {
 		i.projectPath = reserve
 	}
 
-	i.ConfigMicro.DetectedMicroservices = i.services
+	i.ConfigMicroRoot.DetectedMicroservices = i.services
+
 	fmt.Println()
 
 	return nil
@@ -258,15 +314,6 @@ func (i *Initializer) DetectProjectMicroservice() error {
 /************SetDefaults*******************************/
 /****************************************************/
 
-func (i *Initializer) setDefaults() {
-	i.config.ProjectName = i.getDefaultProjectName()
-	i.config.ProjectType = "monolith"
-	i.config.CloudProvider = "aws"
-	i.config.Port = i.getDefaultPort()
-	i.config.Environment = "production"
-	i.config.Namespace = "default"
-	i.config.ContainerRegistry = ""
-}
 func (i *Initializer) getDefaultProjectName() string {
 	absPath, err := filepath.Abs(i.projectPath)
 	if err != nil {
@@ -287,7 +334,7 @@ func (i *Initializer) getDefaultPort() int {
 		"rust":   8080,
 	}
 
-	if port, ok := portMap[i.config.Language]; ok {
+	if port, ok := portMap[i.baseconfigapp.Language]; ok {
 		return port
 	}
 	return 8080
@@ -298,15 +345,15 @@ func (i *Initializer) getDefaultPort() int {
 /****************************************************/
 
 func (i *Initializer) validateConfig() error {
-	if i.config.ProjectType == "monolith" {
-		if i.config.ProjectName == "" {
+	if i.configmonolith.ProjectType == "monolith" {
+		if i.configmonolith.ProjectName == "" {
 			return fmt.Errorf("project name cannot be empty")
 		}
-		if i.config.Language == "" {
+		if i.configmonolith.Language == "" {
 			return fmt.Errorf("language detection failed")
 		}
-		if i.config.Port <= 0 || i.config.Port > 65535 {
-			return fmt.Errorf("invalid port number: %d", i.config.Port)
+		if i.configmonolith.Port <= 0 || i.configmonolith.Port > 65535 {
+			return fmt.Errorf("invalid port number: %d", i.configmonolith.Port)
 		}
 	} else {
 		if i.services == nil {
@@ -328,7 +375,13 @@ func (i *Initializer) saveConfig() error {
 	}
 
 	// Generate YAML content
-	data, err := yaml.Marshal(i.config)
+	data, err := yaml.Marshal(i)
+	if i.ConfigMicro.ProjectType == "microservice" {
+		data, err = yaml.Marshal(i.ConfigMicro)
+	} else {
+		data, err = yaml.Marshal(i.configmonolith)
+	}
+
 	if err != nil {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
@@ -349,7 +402,7 @@ func (i *Initializer) saveConfigMicroservice() error {
 	}
 
 	// Generate YAML content
-	data, err := yaml.Marshal(i.ConfigMicro)
+	data, err := yaml.Marshal(i.ConfigMicroRoot)
 	if err != nil {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
